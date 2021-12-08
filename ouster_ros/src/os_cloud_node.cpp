@@ -9,10 +9,12 @@
 #include <sensor_msgs/Imu.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <tf2_ros/static_transform_broadcaster.h>
+#include <pcl/point_types.h>
 
 #include <algorithm>
 #include <chrono>
 #include <memory>
+#include <pcl_conversions/pcl_conversions.h>
 
 #include "ouster/lidar_scan.h"
 #include "ouster/types.h"
@@ -50,6 +52,7 @@ int main(int argc, char** argv) {
     auto pf = sensor::get_format(info);
 
     auto lidar_pub = nh.advertise<sensor_msgs::PointCloud2>("points", 10);
+    auto packet_pub = nh.advertise<sensor_msgs::PointCloud2>("points_packet", 10);
     auto imu_pub = nh.advertise<sensor_msgs::Imu>("imu", 100);
 
     auto xyz_lut = ouster::make_xyz_lut(info);
@@ -79,6 +82,8 @@ int main(int argc, char** argv) {
 
     auto lidar_packet_sub = nh.subscribe<PacketMsg, const PacketMsg&>(
         "lidar_packets", 2048, lidar_handler);
+
+
     auto imu_packet_sub = nh.subscribe<PacketMsg, const PacketMsg&>(
         "imu_packets", 100, imu_handler);
 
@@ -90,6 +95,79 @@ int main(int argc, char** argv) {
 
     tf_bcast.sendTransform(ouster_ros::transform_to_tf_msg(
         info.lidar_to_sensor_transform, sensor_frame, lidar_frame));
+
+
+    auto lidar_packet_sub2 = nh.subscribe<PacketMsg, const PacketMsg&>(
+        "lidar_packets", 2048, [&](const PacketMsg& pm){
+
+            auto ptr = pm.buf.data();
+            // HEADER
+            uint64_t t;
+            uint16_t mid, fid;
+            uint32_t encCount;
+            
+            memcpy(&t, ptr, sizeof(uint64_t)); ptr += sizeof(uint64_t);
+            memcpy(&mid, ptr, sizeof(uint16_t)); ptr += sizeof(uint16_t);
+            memcpy(&fid, ptr, sizeof(uint16_t)); ptr += sizeof(uint16_t);
+            memcpy(&encCount, ptr, sizeof(uint32_t)); ptr += sizeof(uint32_t);
+
+
+            printf("--> %ld, %d, %d, %d\n", t, mid, fid, encCount);
+
+            // N Channel data blocks
+            
+            double n = info.lidar_origin_to_beam_origin_mm;
+            const double azimuth_radians = M_PI * 2.0 / 1024;
+
+            // for(unsigned i = 0; i < info.beam_altitude_angles.size(); i++){
+            //     printf("%d --> %f\n", i, info.beam_altitude_angles[i]);
+            // }
+            // getchar();
+            // for(unsigned i = 0; i < info.beam_azimuth_angles.size(); i++){
+            //     printf("%f, ", info.beam_azimuth_angles[i]);
+            // }
+            // getchar();
+    
+            pcl::PointCloud<pcl::PointXYZ> cloud;
+            int counter =0;
+            cloud.resize(pf.columns_per_packet*pf.pixels_per_column);
+            for(int v = 0; v<pf.columns_per_packet;v++){
+                for(int u = 0; u < pf.pixels_per_column; u++){
+                    double encoder = 2.0 * M_PI - ((mid+v) * azimuth_radians);
+                    // Just read range and ignore the rest
+                    uint32_t r;
+                    uint8_t ref;
+                    uint16_t pho, amb;
+                    memcpy(&r, ptr, sizeof(uint32_t)); ptr += sizeof(uint32_t);
+                    memcpy(&ref, ptr, sizeof(uint8_t)); ptr += sizeof(uint8_t)*2;   // Skip 8 bits unused
+                    memcpy(&pho, ptr, sizeof(uint16_t)); ptr += sizeof(uint16_t);
+                    memcpy(&amb, ptr, sizeof(uint16_t)); ptr += sizeof(uint16_t)*2;   // Skip 16 bits unused
+
+                    double azimuth = -info.beam_azimuth_angles[u] * M_PI / 180.0;
+                    double altitude = info.beam_altitude_angles[u] * M_PI / 180.0;
+
+                    double x = (r-n)*cos(encoder+azimuth)*cos(altitude)+n*cos(encoder);
+                    double y = (r-n)*sin(encoder+azimuth)*cos(altitude)+n*sin(encoder);
+                    double z = (r-n)*sin(altitude);
+                    auto& refP = cloud.at(counter);
+                    counter++;
+                    refP.x = x/1000.f;
+                    refP.y = y/1000.f;
+                    refP.z = z/1000.f;
+
+                    // printf("%d, %d, %f, %f, %f, %f, %f, %f",i,j, encoder, azimuth, altitude, x, y, z);
+
+                }
+                // getchar();
+            }
+            // getchar();
+            sensor_msgs::PointCloud2 msg;
+            pcl::toROSMsg(cloud, msg);
+            msg.header.frame_id = sensor_frame;
+            msg.header.stamp.fromNSec(ls.headers.begin()->timestamp.count());
+
+            packet_pub.publish(msg);
+        });
 
     ros::spin();
 
