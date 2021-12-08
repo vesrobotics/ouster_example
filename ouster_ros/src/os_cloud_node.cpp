@@ -94,7 +94,7 @@ Cloud packetToCloud(const PacketMsg &_pkt, sensor::sensor_info _info){
 
     // N Channel data blocks
     double n = _info.lidar_origin_to_beam_origin_mm;
-    const double azimuth_radians = M_PI * 2.0 / 1024;
+    const double azimuth_radians = M_PI * 2.0 / _info.format.columns_per_frame;
 
 
     Cloud cloud;
