@@ -62,9 +62,9 @@ ChannelDataBlock parseBlock(const PacketMsg &_pkt, size_t _idx){
     ChannelDataBlock data;
 
     memcpy(&data.range,     ptr, sizeof(uint32_t)); ptr += sizeof(uint32_t);
-    memcpy(&data.calRef,    ptr, sizeof(uint8_t));  ptr += sizeof(uint8_t)*2;   // Skip 8 bits unused
+    memcpy(&data.calRef,    ptr, sizeof(uint16_t));  ptr += sizeof(uint16_t);   // Last 8 bits unused
     memcpy(&data.sigPhot,   ptr, sizeof(uint16_t)); ptr += sizeof(uint16_t);
-    memcpy(&data.infrared,  ptr, sizeof(uint16_t)); ptr += sizeof(uint16_t)*2;   // Skip 16 bits unused
+    memcpy(&data.infrared,  ptr, sizeof(uint32_t)); ptr += sizeof(uint32_t);   // Last 16 bits unused
 
     return data;
 }
@@ -74,7 +74,7 @@ Cloud packetToCloud(const PacketMsg &_pkt, sensor::sensor_info _info){
     PacketHeader header = getPacketHeader(_pkt);
     auto pf = sensor::get_format(_info);
 
-    printf("--> %ld, %d, %d, %d\n", header.ts, header.mId, header.fId, header.encCount);
+    // printf("--> %ld, %d, %d, %d\n", header.ts, header.mId, header.fId, header.encCount);
 
     // N Channel data blocks
     double n = _info.lidar_origin_to_beam_origin_mm;
@@ -95,10 +95,14 @@ Cloud packetToCloud(const PacketMsg &_pkt, sensor::sensor_info _info){
             double x = (dataBlock.range-n)*cos(encoder+azimuth)*cos(altitude)+n*cos(encoder);
             double y = (dataBlock.range-n)*sin(encoder+azimuth)*cos(altitude)+n*sin(encoder);
             double z = (dataBlock.range-n)*sin(altitude);
+
+            Eigen::Vector4d p = { x, y, z, 1 };
+            p = _info.lidar_to_sensor_transform * p;
+
             cloud.at(counter) = Point{{{  
-                    static_cast<float>(x/1000.0f), 
-                    static_cast<float>(y/1000.0f),
-                    static_cast<float>(z/1000.0f), 1.0f}},
+                    static_cast<float>(p[0]*sensor::range_unit), 
+                    static_cast<float>(p[1]*sensor::range_unit),
+                    static_cast<float>(p[2]*sensor::range_unit), 1.0f}},
                 static_cast<float>(dataBlock.sigPhot),
                 static_cast<uint32_t>(header.ts),
                 static_cast<uint16_t>(dataBlock.calRef),
