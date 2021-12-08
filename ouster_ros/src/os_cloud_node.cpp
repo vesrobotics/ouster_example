@@ -22,12 +22,18 @@
 #include "ouster_ros/PacketMsg.h"
 #include "ouster_ros/ros.h"
 
+#include <cassert>
+
 using PacketMsg = ouster_ros::PacketMsg;
 using Cloud = ouster_ros::Cloud;
 using Point = ouster_ros::Point;
 namespace sensor = ouster::sensor;
 
-struct PacketHeader{
+struct MeasurementBlock{
+    const uint8_t *data;
+};
+
+struct MeasurementBlockHeader{
     uint64_t ts;
     uint16_t mId, fId;
     uint32_t encCount;
@@ -41,9 +47,20 @@ struct ChannelDataBlock{
     uint16_t infrared;
 };
 
-PacketHeader getPacketHeader(const PacketMsg& _pkt){
-    auto ptr = _pkt.buf.data();
-    PacketHeader header;
+MeasurementBlock getMeasurementBlock(const PacketMsg& _pkt, size_t _mBlock, sensor::packet_format _format){
+    assert(_mblock < _format.columns_per_packet);
+
+    size_t nBytesBlock = (128 + _format.pixels_per_column*96 + 32)/8;
+
+    MeasurementBlock b;
+    b.data = _pkt.buf.data() + nBytesBlock*_mBlock;
+
+    return b;
+}
+
+MeasurementBlockHeader getPacketHeader(MeasurementBlock _mb){
+    auto ptr = _mb.data;
+    MeasurementBlockHeader header;
     
     memcpy(&header.ts,          ptr, sizeof(uint64_t)); ptr += sizeof(uint64_t);
     memcpy(&header.mId,         ptr, sizeof(uint16_t)); ptr += sizeof(uint16_t);
@@ -53,12 +70,12 @@ PacketHeader getPacketHeader(const PacketMsg& _pkt){
     return header;
 }
 
-const uint8_t* blockPointer(const PacketMsg &_pkt, size_t _idx){
-    return _pkt.buf.data()+sizeof(PacketHeader)+ChannelDataBlock::BLOCK_SIZE*_idx;
+const uint8_t* channelDataBlockPtr(MeasurementBlock _mb, size_t _dBlock){
+    return _mb.data + sizeof(MeasurementBlockHeader) + ChannelDataBlock::BLOCK_SIZE*_dBlock;
 }
 
-ChannelDataBlock parseBlock(const PacketMsg &_pkt, size_t _idx){
-    auto ptr = blockPointer(_pkt, _idx);
+ChannelDataBlock parseDataBlock(MeasurementBlock _mb, size_t _idx){
+    auto ptr = channelDataBlockPtr(_mb, _idx);
     ChannelDataBlock data;
 
     memcpy(&data.range,     ptr, sizeof(uint32_t)); ptr += sizeof(uint32_t);
@@ -71,7 +88,6 @@ ChannelDataBlock parseBlock(const PacketMsg &_pkt, size_t _idx){
 
 Cloud packetToCloud(const PacketMsg &_pkt, sensor::sensor_info _info){
     
-    PacketHeader header = getPacketHeader(_pkt);
     auto pf = sensor::get_format(_info);
 
     // printf("--> %ld, %d, %d, %d\n", header.ts, header.mId, header.fId, header.encCount);
@@ -80,13 +96,16 @@ Cloud packetToCloud(const PacketMsg &_pkt, sensor::sensor_info _info){
     double n = _info.lidar_origin_to_beam_origin_mm;
     const double azimuth_radians = M_PI * 2.0 / 1024;
 
+
     Cloud cloud;
     int counter =0;
     cloud.resize(pf.columns_per_packet*pf.pixels_per_column);
     for(int v = 0; v<pf.columns_per_packet;v++){
+        MeasurementBlock mb = getMeasurementBlock(_pkt, v, pf);
+        MeasurementBlockHeader header = getPacketHeader(mb);
         for(int u = 0; u < pf.pixels_per_column; u++){
             // Just read range and ignore the rest
-            auto dataBlock = parseBlock(_pkt, u);
+            auto dataBlock = parseDataBlock(mb, u);
 
             double encoder = 2.0 * M_PI - ((header.mId+v) * azimuth_radians);
             double azimuth = -_info.beam_azimuth_angles[u] * M_PI / 180.0;
