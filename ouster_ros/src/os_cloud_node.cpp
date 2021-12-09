@@ -107,7 +107,7 @@ Cloud packetToCloud(const PacketMsg &_pkt, sensor::sensor_info _info){
             // Just read range and ignore the rest
             auto dataBlock = parseDataBlock(mb, u);
 
-            double encoder = 2.0 * M_PI - ((header.mId+v) * azimuth_radians);
+            double encoder = 2.0 * M_PI - (header.mId * azimuth_radians);
             double azimuth = -_info.beam_azimuth_angles[u] * M_PI / 180.0;
             double altitude = _info.beam_altitude_angles[u] * M_PI / 180.0;
 
